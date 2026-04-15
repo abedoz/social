@@ -11,16 +11,30 @@ sleep 5
 
 # Connect to tailnet and route all traffic through the exit node
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
-    if [ -n "$TAILSCALE_EXIT_NODE" ]; then
-        tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=railway-bot --exit-node="$TAILSCALE_EXIT_NODE" && \
-            echo "Tailscale connected with exit node: $TAILSCALE_EXIT_NODE" || \
-            echo "WARNING: Tailscale failed to connect. Bot will run without VPN."
+    echo "TAILSCALE_AUTHKEY is set (length: $(printf '%s' "$TAILSCALE_AUTHKEY" | wc -c))"
+    echo "TAILSCALE_EXIT_NODE: ${TAILSCALE_EXIT_NODE:-not set}"
+
+    # First, just connect to tailnet (no exit node yet)
+    echo "Attempting: tailscale up --authkey=*** --hostname=railway-bot"
+    tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=railway-bot 2>&1
+    UP_EXIT=$?
+    echo "tailscale up exit code: $UP_EXIT"
+
+    if [ $UP_EXIT -eq 0 ]; then
+        echo "Tailscale authenticated."
+        tailscale status 2>&1 || true
+
+        # Now set exit node separately if configured
+        if [ -n "$TAILSCALE_EXIT_NODE" ]; then
+            echo "Setting exit node to: $TAILSCALE_EXIT_NODE"
+            tailscale set --exit-node="$TAILSCALE_EXIT_NODE" 2>&1
+            SET_EXIT=$?
+            echo "tailscale set exit-node exit code: $SET_EXIT"
+        fi
     else
-        tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=railway-bot && \
-            echo "Tailscale connected (no exit node)." || \
-            echo "WARNING: Tailscale failed to connect. Bot will run without VPN."
+        echo "WARNING: Tailscale failed to authenticate. Bot will run without VPN."
+        echo "Check that TAILSCALE_AUTHKEY is valid and reusable."
     fi
-    tailscale status 2>&1 || true
 else
     echo "WARNING: TAILSCALE_AUTHKEY not set. Skipping Tailscale. Bot will run without VPN."
 fi
