@@ -1,17 +1,20 @@
 import os
 import re
+import subprocess
 import uuid
 
+import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
+    CommandHandler,
     MessageHandler,
     ContextTypes,
     filters,
 )
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, PROXY
 from downloader import download_media, MODE_HIGHEST, MODE_LOWEST, MODE_AUDIO, MODE_VIDEO
 
 URL_PATTERN = re.compile(r"https?://[^\s]+")
@@ -105,8 +108,46 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lines = []
+
+    # Direct IP (no proxy)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get("https://api.ipify.org?format=json")
+            direct_ip = resp.json().get("ip", "unknown")
+        lines.append(f"Direct IP: {direct_ip}")
+    except Exception as exc:
+        lines.append(f"Direct IP: failed ({exc})")
+
+    # Proxy IP
+    if PROXY:
+        try:
+            async with httpx.AsyncClient(proxy=PROXY, timeout=10) as client:
+                resp = await client.get("https://api.ipify.org?format=json")
+                proxy_ip = resp.json().get("ip", "unknown")
+            lines.append(f"Proxy IP:  {proxy_ip} (via {PROXY})")
+        except Exception as exc:
+            lines.append(f"Proxy IP:  failed ({exc})")
+    else:
+        lines.append("Proxy: not configured")
+
+    # Tailscale status
+    try:
+        ts = subprocess.run(["tailscale", "status", "--json=false"],
+                            capture_output=True, text=True, timeout=5)
+        lines.append(f"\nTailscale:\n{ts.stdout.strip() or ts.stderr.strip()}")
+    except FileNotFoundError:
+        lines.append("\nTailscale: not installed")
+    except Exception as exc:
+        lines.append(f"\nTailscale: error ({exc})")
+
+    await update.message.reply_text("\n".join(lines))
+
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("status", handle_status))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     print("Bot started. Listening for messages...")
