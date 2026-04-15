@@ -11,6 +11,21 @@ RESOLUTION_STEPS = [1080, 720, 480, 360]
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
 DOWNLOAD_TIMEOUT = 120
 
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+}
+
 MODE_HIGHEST = "highest"
 MODE_LOWEST = "lowest"
 MODE_AUDIO = "audio"
@@ -38,6 +53,13 @@ def _build_opts(output_path, format_spec, merge=True):
         "no_warnings": True,
         "noplaylist": True,
         "socket_timeout": 30,
+        "http_headers": BROWSER_HEADERS,
+        "sleep_interval": 1,
+        "max_sleep_interval": 3,
+        "sleep_interval_requests": 0.5,
+        "retries": 3,
+        "extractor_retries": 3,
+        "fragment_retries": 3,
     }
     if merge:
         opts["merge_output_format"] = "mp4"
@@ -53,7 +75,14 @@ def _file_under_limit(path):
 
 def _extract_info(url):
     """Extract metadata without downloading."""
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True}) as ydl:
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "http_headers": BROWSER_HEADERS,
+        "extractor_retries": 3,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
 
 
