@@ -8,8 +8,14 @@ tailscaled --tun=userspace-networking \
 
 sleep 3
 
-# Connect to tailnet using the auth key
-tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=railway-bot
+# Connect to tailnet and route all traffic through the exit node
+# Set TAILSCALE_EXIT_NODE in Railway env vars to your exit node's tailnet IP or hostname
+# e.g. TAILSCALE_EXIT_NODE=gl-ax1800
+if [ -n "$TAILSCALE_EXIT_NODE" ]; then
+    tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=railway-bot --exit-node="$TAILSCALE_EXIT_NODE"
+else
+    tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=railway-bot
+fi
 
 echo "Tailscale connected."
 tailscale status
