@@ -120,17 +120,21 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         lines.append(f"Direct IP: failed ({exc})")
 
-    # Proxy IP
-    if PROXY:
-        try:
-            async with httpx.AsyncClient(proxy=PROXY, timeout=10) as client:
-                resp = await client.get("https://api.ipify.org?format=json")
-                proxy_ip = resp.json().get("ip", "unknown")
-            lines.append(f"Proxy IP:  {proxy_ip} (via {PROXY})")
-        except Exception as exc:
-            lines.append(f"Proxy IP:  failed ({exc})")
-    else:
-        lines.append("Proxy: not configured")
+    # Test SOCKS5 proxy
+    try:
+        async with httpx.AsyncClient(proxy="socks5://localhost:1055", timeout=10) as client:
+            resp = await client.get("https://api.ipify.org?format=json")
+            lines.append(f"SOCKS5:    {resp.json().get('ip', '?')} (localhost:1055)")
+    except Exception as exc:
+        lines.append(f"SOCKS5:    failed ({exc})")
+
+    # Test HTTP proxy
+    try:
+        async with httpx.AsyncClient(proxy="http://localhost:1056", timeout=10) as client:
+            resp = await client.get("https://api.ipify.org?format=json")
+            lines.append(f"HTTP prx:  {resp.json().get('ip', '?')} (localhost:1056)")
+    except Exception as exc:
+        lines.append(f"HTTP prx:  failed ({exc})")
 
     # Tailscale status
     try:

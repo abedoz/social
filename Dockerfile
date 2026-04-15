@@ -3,8 +3,6 @@ FROM python:3.12-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ffmpeg curl && \
     curl -fsSL https://tailscale.com/install.sh | sh && \
-    apt-get remove -y curl && \
-    apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
