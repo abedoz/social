@@ -15,3 +15,7 @@ DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "/tmp/tgbot_downloads")
 Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
 MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "50"))
+
+# Optional: proxy URL for yt-dlp (helps bypass datacenter IP blocks)
+# Examples: socks5://user:pass@host:port  or  http://user:pass@host:port
+PROXY = os.getenv("PROXY", "")

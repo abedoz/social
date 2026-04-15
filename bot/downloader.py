@@ -7,11 +7,11 @@ from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 import yt_dlp
 
-from config import DOWNLOAD_DIR, MAX_FILE_MB
+from config import DOWNLOAD_DIR, MAX_FILE_MB, PROXY
 
 RESOLUTION_STEPS = [1080, 720, 480, 360]
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
-DOWNLOAD_TIMEOUT = 120
+DOWNLOAD_TIMEOUT = 180
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -83,7 +83,7 @@ def _clean_url(url):
 
 def _base_opts():
     """Common yt-dlp options shared across all calls."""
-    return {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
@@ -98,8 +98,12 @@ def _base_opts():
         "geo_bypass": True,
         "extractor_args": {
             "youtube": {"player_client": ["ios,web"]},
+            "tiktok": {"api_hostname": ["api22-normal-c-useast2a.tiktokv.com"]},
         },
     }
+    if PROXY:
+        opts["proxy"] = PROXY
+    return opts
 
 
 def _build_opts(output_path, format_spec, merge=True, impersonate=None):
@@ -123,6 +127,7 @@ def _file_under_limit(path):
 def _extract_info(url):
     """Extract metadata, cycling through impersonation targets on failure."""
     url = _clean_url(url)
+    last_error = None
 
     # Try with each impersonation target
     if HAS_CURL_CFFI:
@@ -132,13 +137,30 @@ def _extract_info(url):
                 opts["impersonate"] = target
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     return ydl.extract_info(url, download=False)
-            except Exception:
+            except Exception as exc:
+                last_error = exc
+                print(f"[yt-dlp] extract failed with impersonate={target}: {exc}")
                 continue
 
-    # Final attempt without impersonation
-    opts = _base_opts()
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False)
+    # Attempt without impersonation
+    try:
+        opts = _base_opts()
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    except Exception as exc:
+        last_error = exc
+        print(f"[yt-dlp] extract failed without impersonation: {exc}")
+
+    # Last resort: force generic extractor
+    try:
+        opts = _base_opts()
+        opts["force_generic_extractor"] = True
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    except Exception as exc:
+        print(f"[yt-dlp] generic extractor also failed: {exc}")
+
+    raise last_error or RuntimeError("All extraction attempts failed")
 
 
 def _download_with_format(url, format_spec, merge=True):
@@ -163,9 +185,27 @@ def _download_with_format(url, format_spec, merge=True):
                 return filename, info
         except Exception as exc:
             last_error = exc
+            print(f"[yt-dlp] download failed with impersonate={target}: {exc}")
             continue
 
-    raise last_error or RuntimeError("All impersonation targets failed")
+    # Last resort: force generic extractor
+    try:
+        uid = uuid.uuid4().hex[:12]
+        output_path = os.path.join(DOWNLOAD_DIR, f"{uid}.%(ext)s")
+        opts = _build_opts(output_path, format_spec, merge=merge)
+        opts["force_generic_extractor"] = True
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            if not os.path.exists(filename):
+                mp4 = Path(filename).with_suffix(".mp4")
+                if mp4.exists():
+                    filename = str(mp4)
+            return filename, info
+    except Exception as exc:
+        print(f"[yt-dlp] generic extractor download also failed: {exc}")
+
+    raise last_error or RuntimeError("All download attempts failed")
 
 
 def _try_download(url, format_spec, is_audio=False, title="media", merge=True):
