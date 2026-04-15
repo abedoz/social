@@ -1,7 +1,9 @@
 import asyncio
 import os
+import re
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 import yt_dlp
 
@@ -26,10 +28,26 @@ BROWSER_HEADERS = {
     "Sec-Ch-Ua-Platform": '"Windows"',
 }
 
+# TLS impersonation targets to cycle through on failure
+IMPERSONATE_TARGETS = ["chrome", "chrome110", "edge99", "safari15_5"]
+
+# Check if curl_cffi is available for TLS impersonation
+try:
+    import curl_cffi  # noqa: F401
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
+
 MODE_HIGHEST = "highest"
 MODE_LOWEST = "lowest"
 MODE_AUDIO = "audio"
 MODE_VIDEO = "video"
+
+# Tracking parameters to strip from URLs
+TRACKING_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "si", "feature", "fbclid", "igshid", "s", "t", "ref",
+}
 
 
 class DownloadResult:
@@ -45,10 +63,27 @@ class DownloadResult:
         return self.error is None and (self.filepath or self.stream_url)
 
 
-def _build_opts(output_path, format_spec, merge=True):
-    opts = {
-        "outtmpl": output_path,
-        "format": format_spec,
+def _clean_url(url):
+    """Strip tracking params and normalize the URL for better extraction."""
+    parsed = urlparse(url)
+
+    # Strip tracking parameters
+    params = parse_qs(parsed.query, keep_blank_values=False)
+    cleaned = {k: v for k, v in params.items() if k not in TRACKING_PARAMS}
+    clean_query = urlencode(cleaned, doseq=True)
+
+    # Normalize x.com → twitter.com (yt-dlp has better twitter.com support)
+    hostname = parsed.hostname or ""
+    netloc = parsed.netloc
+    if hostname == "x.com":
+        netloc = netloc.replace("x.com", "twitter.com", 1)
+
+    return urlunparse(parsed._replace(netloc=netloc, query=clean_query))
+
+
+def _base_opts():
+    """Common yt-dlp options shared across all calls."""
+    return {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
@@ -60,9 +95,21 @@ def _build_opts(output_path, format_spec, merge=True):
         "retries": 3,
         "extractor_retries": 3,
         "fragment_retries": 3,
+        "geo_bypass": True,
+        "extractor_args": {
+            "youtube": {"player_client": ["ios,web"]},
+        },
     }
+
+
+def _build_opts(output_path, format_spec, merge=True, impersonate=None):
+    opts = _base_opts()
+    opts["outtmpl"] = output_path
+    opts["format"] = format_spec
     if merge:
         opts["merge_output_format"] = "mp4"
+    if impersonate and HAS_CURL_CFFI:
+        opts["impersonate"] = impersonate
     return opts
 
 
@@ -74,33 +121,51 @@ def _file_under_limit(path):
 
 
 def _extract_info(url):
-    """Extract metadata without downloading."""
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "http_headers": BROWSER_HEADERS,
-        "extractor_retries": 3,
-    }
+    """Extract metadata, cycling through impersonation targets on failure."""
+    url = _clean_url(url)
+
+    # Try with each impersonation target
+    if HAS_CURL_CFFI:
+        for target in IMPERSONATE_TARGETS:
+            try:
+                opts = _base_opts()
+                opts["impersonate"] = target
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except Exception:
+                continue
+
+    # Final attempt without impersonation
+    opts = _base_opts()
     with yt_dlp.YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
 
 
 def _download_with_format(url, format_spec, merge=True):
-    """Download with a specific format string. Returns (filepath, info) or raises."""
-    uid = uuid.uuid4().hex[:12]
-    output_path = os.path.join(DOWNLOAD_DIR, f"{uid}.%(ext)s")
-    opts = _build_opts(output_path, format_spec, merge=merge)
+    """Download with a specific format, cycling impersonation targets on failure."""
+    url = _clean_url(url)
+    last_error = None
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        # yt-dlp may merge into mp4
-        if not os.path.exists(filename):
-            mp4 = Path(filename).with_suffix(".mp4")
-            if mp4.exists():
-                filename = str(mp4)
-        return filename, info
+    targets = IMPERSONATE_TARGETS if HAS_CURL_CFFI else [None]
+    for target in targets:
+        try:
+            uid = uuid.uuid4().hex[:12]
+            output_path = os.path.join(DOWNLOAD_DIR, f"{uid}.%(ext)s")
+            opts = _build_opts(output_path, format_spec, merge=merge, impersonate=target)
+
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                if not os.path.exists(filename):
+                    mp4 = Path(filename).with_suffix(".mp4")
+                    if mp4.exists():
+                        filename = str(mp4)
+                return filename, info
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    raise last_error or RuntimeError("All impersonation targets failed")
 
 
 def _try_download(url, format_spec, is_audio=False, title="media", merge=True):
@@ -125,12 +190,11 @@ def _sync_download(url, mode):
     elif mode == MODE_LOWEST:
         return _download_lowest(url, title)
     else:
-        return _download_highest(url, title)
+        return _download_highest(url, title, info)
 
 
-def _download_highest(url, title):
+def _download_highest(url, title, info=None):
     """Best video+audio merged, with resolution step-down if over size limit."""
-    # Try best merged
     try:
         result = _try_download(
             url, "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
@@ -141,7 +205,6 @@ def _download_highest(url, title):
     except Exception:
         pass
 
-    # Resolution step-down
     for height in RESOLUTION_STEPS:
         try:
             fmt = (
@@ -156,7 +219,7 @@ def _download_highest(url, title):
             continue
 
     # Fallback: stream URL
-    fallback_url = info.get("url") or info.get("webpage_url") or url
+    fallback_url = (info or {}).get("url") or (info or {}).get("webpage_url") or url
     return DownloadResult(stream_url=fallback_url, title=title)
 
 
@@ -200,7 +263,6 @@ def _download_video_only(url, title):
     except Exception:
         pass
 
-    # Step down if too large
     for height in RESOLUTION_STEPS:
         try:
             result = _try_download(
