@@ -16,7 +16,7 @@ if [ -n "$TAILSCALE_AUTHKEY" ]; then
 
     # First, just connect to tailnet (no exit node yet)
     echo "Attempting: tailscale up --authkey=*** --hostname=railway-bot"
-    tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=railway-bot 2>&1
+    tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname=railway-bot --accept-routes 2>&1
     UP_EXIT=$?
     echo "tailscale up exit code: $UP_EXIT"
 
