@@ -286,15 +286,43 @@ async def handle_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 analysis.append("No known video keywords found")
 
-            # Extract context around key video keywords
-            for kw in ["progressive", "representations"]:
-                positions = [m.start() for m in _re.finditer(kw, h)]
-                if positions:
-                    analysis.append(f"\n'{kw}' context ({len(positions)} hits):")
-                    for pos in positions[:1]:
-                        snippet = h[max(0, pos-20):pos+300]
-                        snippet = _unescape(snippet.replace("\n", " "))
-                        analysis.append(f"  ...{snippet[:280]}...")
+            # Count video-specific CDN patterns
+            analysis.append(f"  scontent: {h.count('scontent')}")
+            analysis.append(f"  video-: {h.count('video-')}")
+            analysis.append(f"  video.xx: {h.count('video.xx')}")
+
+            # Try OEmbed API
+            vid_match = _re.search(r'/(?:reel|video|watch)/(\d+)', resolved)
+            if vid_match:
+                vid = vid_match.group(1)
+                oembed_url = f"https://www.facebook.com/plugins/video/oembed.json/?url=https://www.facebook.com/reel/{vid}"
+                try:
+                    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as oc:
+                        or_ = await oc.get(oembed_url)
+                        analysis.append(f"\nOEmbed: {or_.status_code} len={len(or_.text)}")
+                        if or_.status_code == 200:
+                            analysis.append(f"  {or_.text[:300]}")
+                except Exception as exc:
+                    analysis.append(f"\nOEmbed: FAILED {str(exc)[:80]}")
+
+                # Try embed plugin
+                embed_url = f"https://www.facebook.com/plugins/video.php?href=https%3A%2F%2Fwww.facebook.com%2Freel%2F{vid}%2F&show_text=false"
+                try:
+                    async with httpx.AsyncClient(timeout=10, follow_redirects=True, headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                    }) as ec:
+                        er = await ec.get(embed_url)
+                        eh = er.text
+                        analysis.append(f"\nEmbed plugin: {er.status_code} len={len(eh)}")
+                        analysis.append(f"  fbcdn={eh.count('fbcdn')} scontent={eh.count('scontent')} video-={eh.count('video-')}")
+                        # Look for video URLs
+                        vids = _re.findall(r'"(https?:\\?/\\?/scontent[^"]+)"', eh)
+                        if not vids:
+                            vids = _re.findall(r'"(https?:\\?/\\?/video[^"]+fbcdn[^"]+)"', eh)
+                        if vids:
+                            analysis.append(f"  VIDEO: {_unescape(vids[0][:200])}")
+                except Exception as exc:
+                    analysis.append(f"\nEmbed plugin: FAILED {str(exc)[:80]}")
 
         except Exception as exc:
             analysis.append(f"FAILED: {str(exc)[:100]}")
