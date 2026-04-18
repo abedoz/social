@@ -62,6 +62,19 @@ def _make_client():
     return httpx.Client(**kwargs)
 
 
+def _fetch(url, headers=None):
+    """Fetch a URL, trying with proxy first, then without."""
+    h = headers or HEADERS
+    if PROXY:
+        try:
+            with httpx.Client(timeout=_TIMEOUT, headers=h, follow_redirects=True, proxy=PROXY) as client:
+                return client.get(url)
+        except Exception as exc:
+            print(f"[instagram] proxy fetch failed, trying direct: {exc}")
+    with httpx.Client(timeout=_TIMEOUT, headers=h, follow_redirects=True) as client:
+        return client.get(url)
+
+
 def _download_url(media_url, ext="jpg"):
     """Download a single URL to the temp directory."""
     uid = uuid.uuid4().hex[:12]

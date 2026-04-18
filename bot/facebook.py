@@ -62,18 +62,41 @@ def _make_client(**extra):
     if PROXY:
         kwargs["proxy"] = PROXY
     kwargs.update(extra)
+    try:
+        client = httpx.Client(**kwargs)
+        # Test the connection
+        return client
+    except Exception:
+        pass
+    # Fall back to no proxy
+    kwargs.pop("proxy", None)
     return httpx.Client(**kwargs)
+
+
+def _fetch(url, headers=None):
+    """Fetch a URL, trying with proxy first, then without."""
+    h = headers or HEADERS
+    # Try with proxy
+    if PROXY:
+        try:
+            with httpx.Client(timeout=_TIMEOUT, headers=h, follow_redirects=True, proxy=PROXY) as client:
+                resp = client.get(url)
+                return resp
+        except Exception as exc:
+            print(f"[facebook] proxy fetch failed, trying direct: {exc}")
+    # Try without proxy
+    with httpx.Client(timeout=_TIMEOUT, headers=h, follow_redirects=True) as client:
+        return client.get(url)
 
 
 def _download_video_url(video_url):
     """Download a video from a direct CDN URL."""
     uid = uuid.uuid4().hex[:12]
     filepath = os.path.join(DOWNLOAD_DIR, f"{uid}.mp4")
-    with _make_client() as client:
-        resp = client.get(video_url)
-        resp.raise_for_status()
-        with open(filepath, "wb") as f:
-            f.write(resp.content)
+    resp = _fetch(video_url)
+    resp.raise_for_status()
+    with open(filepath, "wb") as f:
+        f.write(resp.content)
     if os.path.getsize(filepath) < 1000:
         os.remove(filepath)
         return None
@@ -106,12 +129,11 @@ def _extract_best_video(html):
 def _resolve_url(url):
     """Follow redirects to get the actual Facebook video page URL."""
     try:
-        with _make_client() as client:
-            resp = client.get(url)
-            resolved = str(resp.url)
-            if resolved != url:
-                print(f"[facebook] resolved: {url} → {resolved}")
-            return resolved
+        resp = _fetch(url)
+        resolved = str(resp.url)
+        if resolved != url:
+            print(f"[facebook] resolved: {url} → {resolved}")
+        return resolved
     except Exception as exc:
         print(f"[facebook] resolve failed: {exc}")
         return url
@@ -129,12 +151,12 @@ def _try_mbasic(url):
     print(f"[facebook] trying mbasic: {mbasic_url}")
 
     try:
-        with _make_client(headers=MOBILE_HEADERS) as client:
-            resp = client.get(mbasic_url)
-            if resp.status_code != 200:
-                print(f"[facebook] mbasic returned {resp.status_code}")
-                return None
-            html = resp.text
+        resp = _fetch(mbasic_url, headers=MOBILE_HEADERS)
+        if resp.status_code != 200:
+            print(f"[facebook] mbasic returned {resp.status_code}")
+            return None
+        html = resp.text
+        print(f"[facebook] mbasic page length: {len(html)}")
 
         video_url = _extract_best_video(html)
         if video_url:
@@ -148,13 +170,14 @@ def _try_mbasic(url):
         if video_redirect:
             redirect_url = "https://mbasic.facebook.com" + _unescape(video_redirect[0])
             print(f"[facebook] following video redirect...")
-            with _make_client(headers=MOBILE_HEADERS) as client:
-                resp = client.get(redirect_url)
-                final_url = str(resp.url)
-                if "fbcdn.net" in final_url or "video" in final_url:
-                    filepath = _download_video_url(final_url)
-                    if filepath:
-                        return {"type": "video", "file": filepath}
+            resp = _fetch(redirect_url, headers=MOBILE_HEADERS)
+            final_url = str(resp.url)
+            if "fbcdn.net" in final_url or "video" in final_url:
+                filepath = _download_video_url(final_url)
+                if filepath:
+                    return {"type": "video", "file": filepath}
+        else:
+            print("[facebook] mbasic: no video_redirect found in HTML")
 
     except Exception as exc:
         print(f"[facebook] mbasic failed: {exc}")
@@ -173,12 +196,12 @@ def _try_mobile(url):
     print(f"[facebook] trying mobile: {mobile_url}")
 
     try:
-        with _make_client(headers=MOBILE_HEADERS) as client:
-            resp = client.get(mobile_url)
-            if resp.status_code != 200:
-                print(f"[facebook] mobile returned {resp.status_code}")
-                return None
-            html = resp.text
+        resp = _fetch(mobile_url, headers=MOBILE_HEADERS)
+        if resp.status_code != 200:
+            print(f"[facebook] mobile returned {resp.status_code}")
+            return None
+        html = resp.text
+        print(f"[facebook] mobile page length: {len(html)}")
 
         video_url = _extract_best_video(html)
         if video_url:
@@ -186,6 +209,8 @@ def _try_mobile(url):
             filepath = _download_video_url(video_url)
             if filepath:
                 return {"type": "video", "file": filepath}
+        else:
+            print("[facebook] mobile: no video URL found in page source")
 
     except Exception as exc:
         print(f"[facebook] mobile failed: {exc}")
@@ -199,12 +224,12 @@ def _try_desktop(url):
     print(f"[facebook] trying desktop: {url}")
 
     try:
-        with _make_client() as client:
-            resp = client.get(url)
-            if resp.status_code != 200:
-                print(f"[facebook] desktop returned {resp.status_code}")
-                return None
-            html = resp.text
+        resp = _fetch(url)
+        if resp.status_code != 200:
+            print(f"[facebook] desktop returned {resp.status_code}")
+            return None
+        html = resp.text
+        print(f"[facebook] desktop page length: {len(html)}")
 
         video_url = _extract_best_video(html)
         if video_url:
@@ -212,6 +237,8 @@ def _try_desktop(url):
             filepath = _download_video_url(video_url)
             if filepath:
                 return {"type": "video", "file": filepath}
+        else:
+            print("[facebook] desktop: no video URL found in page source")
 
     except Exception as exc:
         print(f"[facebook] desktop failed: {exc}")
