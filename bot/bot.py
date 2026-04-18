@@ -260,26 +260,57 @@ async def handle_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         import re as _re
         from facebook import _unescape, BOT_USER_AGENTS
 
-        # Test bot UAs — the key strategy
-        for ua in BOT_USER_AGENTS[:3]:
-            bot_name = ua.split("/")[0].split("(")[0].strip()
-            try:
-                async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={
-                    "User-Agent": ua, "Accept": "*/*"
-                }) as client:
-                    r = await client.get(resolved)
-                    h = r.text
-                    og_count = h.count("og:video")
-                    fbcdn_count = h.count("fbcdn")
-                    analysis.append(f"[{bot_name}] {r.status_code} len={len(h)} og:video={og_count} fbcdn={fbcdn_count}")
-                    if og_count:
-                        og = _re.findall(r'content="(https?:[^"]+)"[^>]*property="og:video', h)
-                        if not og:
-                            og = _re.findall(r'property="og:video[^"]*"\s+content="([^"]+)"', h)
-                        if og:
-                            analysis.append(f"  → {_unescape(og[0][:150])}")
-            except Exception as exc:
-                analysis.append(f"[{bot_name}] FAILED: {str(exc)[:80]}")
+        # Fetch with facebookexternalhit UA and analyze the page
+        ua = BOT_USER_AGENTS[0]
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={
+                "User-Agent": ua, "Accept": "*/*"
+            }) as client:
+                r = await client.get(resolved)
+                h = r.text
+
+            # Search for new key names Facebook might use
+            keywords = [
+                "playable_url", "hd_src", "sd_src", "browser_native",
+                "progressive", "dash_manifest", "video_url", "source_url",
+                "stream_url", "media_url", "video_hd", "video_sd",
+                "attachment", "videoData", "videoUrl", "video_src",
+                "baseURL", "base_url", "representations",
+            ]
+            analysis.append(f"[facebookexternalhit] {r.status_code} len={len(h)}")
+            found_kw = {k: h.count(k) for k in keywords if h.count(k) > 0}
+            if found_kw:
+                analysis.append("Keywords found:")
+                for k, v in sorted(found_kw.items(), key=lambda x: -x[1]):
+                    analysis.append(f"  {k}: {v}")
+            else:
+                analysis.append("No known video keywords found")
+
+            # Find fbcdn video URLs with context
+            video_fbcdn = _re.findall(r'.{0,30}(https?:\\?/\\?/video[^"<>\s\\]{10,300})', h)
+            if video_fbcdn:
+                analysis.append(f"\nfbcdn video URLs ({len(video_fbcdn)}):")
+                for ctx in video_fbcdn[:2]:
+                    analysis.append(f"  {_unescape(ctx[:180])}")
+            else:
+                # Show any fbcdn with /v/ path
+                v_fbcdn = _re.findall(r'.{0,20}(https?:\\?/\\?/[^"<>\s\\]*fbcdn\.net\\?/v\\?/[^"<>\s\\]{10,200})', h)
+                if v_fbcdn:
+                    analysis.append(f"\nfbcdn /v/ URLs ({len(v_fbcdn)}):")
+                    for ctx in v_fbcdn[:2]:
+                        analysis.append(f"  {_unescape(ctx[:180])}")
+                else:
+                    # Just show ANY fbcdn with surrounding key name
+                    samples = _re.findall(r'("[a-zA-Z_]{3,30}":\s*"https?:\\?/\\?/[^"]*fbcdn[^"]{10,200}")', h)
+                    if samples:
+                        analysis.append(f"\nfbcdn key:value samples ({len(samples)}):")
+                        for s in samples[:3]:
+                            analysis.append(f"  {_unescape(s[:200])}")
+                    else:
+                        analysis.append("\nNo fbcdn video/v/ URLs found")
+
+        except Exception as exc:
+            analysis.append(f"FAILED: {str(exc)[:100]}")
 
         amsg = "\n".join(analysis)
         if len(amsg) > 4000:
