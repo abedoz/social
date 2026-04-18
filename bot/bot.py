@@ -254,6 +254,40 @@ async def handle_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = msg[:4000] + "..."
     await update.message.reply_text(msg)
 
+    # Send page analysis as a separate message for Facebook URLs
+    if is_facebook_url(url):
+        analysis = ["Page analysis (mbasic + desktop):\n"]
+        import re as _re
+        for label, fetch_url in [
+            ("mbasic", resolved.replace("www.facebook.com", "mbasic.facebook.com")),
+            ("desktop", resolved),
+        ]:
+            try:
+                async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers={
+                    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"
+                }) as client:
+                    r = await client.get(fetch_url)
+                    h = r.text
+                    analysis.append(f"[{label}] status={r.status_code} len={len(h)}")
+                    analysis.append(f"  fbcdn={h.count('fbcdn')} playable={h.count('playable_url')} hd_src={h.count('hd_src')} sd_src={h.count('sd_src')} og:video={h.count('og:video')}")
+                    analysis.append(f"  video_redirect={h.count('video_redirect')}")
+
+                    # Sample URLs
+                    urls = _re.findall(r'(https?:\\?/\\?/[^"<>\s]*?fbcdn[^"<>\s]*)', h)
+                    if urls:
+                        analysis.append(f"  Found {len(urls)} fbcdn URLs, first:")
+                        from facebook import _unescape
+                        analysis.append(f"    {_unescape(urls[0][:150])}")
+                    else:
+                        analysis.append(f"  No fbcdn URLs")
+            except Exception as exc:
+                analysis.append(f"[{label}] FAILED: {str(exc)[:100]}")
+
+        amsg = "\n".join(analysis)
+        if len(amsg) > 4000:
+            amsg = amsg[:4000] + "..."
+        await update.message.reply_text(amsg)
+
 
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = []
