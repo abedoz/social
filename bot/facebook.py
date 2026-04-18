@@ -20,15 +20,20 @@ _TIMEOUT = 30
 _FB_DOMAINS = {"facebook.com", "www.facebook.com", "m.facebook.com",
                "mbasic.facebook.com", "fb.watch", "fb.com", "www.fb.com"}
 
-# Video URL patterns found in Facebook page source
-_HD_SRC_RE = re.compile(r'hd_src\s*:\s*"(https?://[^"]+)"')
-_SD_SRC_RE = re.compile(r'sd_src\s*:\s*"(https?://[^"]+)"')
-_PLAYABLE_HD_RE = re.compile(r'"playable_url_quality_hd"\s*:\s*"(https?://[^"]+)"')
-_PLAYABLE_SD_RE = re.compile(r'"playable_url"\s*:\s*"(https?://[^"]+)"')
-_BROWSER_URL_RE = re.compile(r'"browser_native_(?:hd|sd)_url"\s*:\s*"(https?://[^"]+)"')
-_OG_VIDEO_RE = re.compile(r'<meta\s+property="og:video(?::url)?"\s+content="(https?://[^"]+)"', re.I)
-_OG_IMAGE_RE = re.compile(r'<meta\s+property="og:image"\s+content="(https?://[^"]+)"', re.I)
-_VIDEO_DIRECT_RE = re.compile(r'"(https?://video[^"]*fbcdn\.net/[^"]+)"')
+# Facebook escapes URLs as https:\/\/... in JS — match both forms
+_URL = r'https?:[^"]+?'  # catches both https:// and https:\/\/
+
+_HD_SRC_RE = re.compile(r'hd_src\s*[":]\s*"(' + _URL + r')"')
+_SD_SRC_RE = re.compile(r'sd_src\s*[":]\s*"(' + _URL + r')"')
+_PLAYABLE_HD_RE = re.compile(r'"playable_url_quality_hd"\s*:\s*"(' + _URL + r')"')
+_PLAYABLE_SD_RE = re.compile(r'"playable_url"\s*:\s*"(' + _URL + r')"')
+_BROWSER_URL_RE = re.compile(r'"browser_native_(?:hd|sd)_url"\s*:\s*"(' + _URL + r')"')
+_OG_VIDEO_RE = re.compile(r'<meta\s+property="og:video(?::url)?"\s+content="(' + _URL + r')"', re.I)
+_OG_IMAGE_RE = re.compile(r'<meta\s+property="og:image"\s+content="(' + _URL + r')"', re.I)
+# Broad catch: any fbcdn video URL in any context
+_FBCDN_VIDEO_RE = re.compile(r'"(https?:\\?/\\?/video[^"]*?fbcdn\.net[^"]+)"')
+# Even broader: any escaped fbcdn URL containing /v/ (video segments)
+_FBCDN_ANY_RE = re.compile(r'"(https?:\\?/\\?/[^"]*?fbcdn\.net\\?/v\\?/[^"]+)"')
 
 HEADERS = {
     "User-Agent": (
@@ -105,22 +110,30 @@ def _download_video_url(video_url):
 
 def _extract_best_video(html):
     """Extract the best quality video URL from HTML source."""
-    # Try HD first, then SD
     patterns = [
-        _PLAYABLE_HD_RE,
-        _HD_SRC_RE,
-        _BROWSER_URL_RE,
-        _PLAYABLE_SD_RE,
-        _SD_SRC_RE,
-        _VIDEO_DIRECT_RE,
-        _OG_VIDEO_RE,
+        ("playable_url_quality_hd", _PLAYABLE_HD_RE),
+        ("hd_src", _HD_SRC_RE),
+        ("browser_native", _BROWSER_URL_RE),
+        ("playable_url", _PLAYABLE_SD_RE),
+        ("sd_src", _SD_SRC_RE),
+        ("fbcdn_video", _FBCDN_VIDEO_RE),
+        ("fbcdn_any", _FBCDN_ANY_RE),
+        ("og:video", _OG_VIDEO_RE),
     ]
-    for pattern in patterns:
+    for name, pattern in patterns:
         matches = pattern.findall(html)
         if matches:
             url = _unescape(matches[0])
-            if "fbcdn.net" in url or "video" in url:
+            print(f"[facebook] pattern '{name}' matched: {url[:100]}...")
+            if "fbcdn" in url or "video" in url or "scontent" in url:
                 return url
+
+    # Debug: check if fbcdn exists at all in the page
+    fbcdn_count = html.count("fbcdn")
+    video_count = html.count("video_url")
+    playable_count = html.count("playable_url")
+    print(f"[facebook] page stats: fbcdn={fbcdn_count} video_url={video_count} playable_url={playable_count}")
+
     return None
 
 
