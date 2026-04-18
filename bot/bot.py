@@ -17,6 +17,8 @@ from telegram.ext import (
 
 from config import BOT_TOKEN, PROXY
 from downloader import download_media, MODE_HIGHEST, MODE_LOWEST, MODE_AUDIO, MODE_VIDEO
+from facebook import is_facebook_url, facebook_download
+from instagram import is_instagram_url, instagram_download
 
 URL_PATTERN = re.compile(r"https?://[^\s]+")
 
@@ -116,9 +118,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if result.error == "timeout":
                 await query.edit_message_text("Download timed out.")
             else:
+                error_detail = result.error or "Unknown error"
+                if len(error_detail) > 300:
+                    error_detail = error_detail[:300] + "..."
                 await query.edit_message_text(
-                    "Could not download this link. "
-                    "The platform may not be supported or the content is private."
+                    f"Download failed.\n\nError: {error_detail}"
                 )
             return
 
@@ -139,6 +143,88 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
+
+
+async def handle_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Debug command: /test <url> — runs each download strategy and reports results."""
+    if not context.args:
+        await update.message.reply_text("Usage: /test <url>")
+        return
+
+    url = context.args[0]
+    lines = [f"Testing: {url}\n"]
+
+    # Step 1: resolve URL
+    if is_facebook_url(url):
+        from facebook import _resolve_url
+        resolved = _resolve_url(url)
+        lines.append(f"Resolved: {resolved}")
+    else:
+        resolved = url
+
+    # Step 2: yt-dlp extract
+    import yt_dlp
+    from downloader import _base_opts
+    try:
+        opts = _base_opts()
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(resolved, download=False)
+            lines.append(f"yt-dlp: OK — {info.get('title', '?')}")
+    except Exception as exc:
+        lines.append(f"yt-dlp: FAILED — {str(exc)[:200]}")
+
+    # Step 3: gallery-dl
+    from downloader import _gallery_dl_download
+    gdl = _gallery_dl_download(resolved)
+    if gdl.ok:
+        lines.append(f"gallery-dl: OK — {gdl.filepath or gdl.filepaths}")
+        # clean up
+        if gdl.filepath and os.path.exists(gdl.filepath):
+            os.remove(gdl.filepath)
+        for f in gdl.filepaths:
+            if os.path.exists(f):
+                os.remove(f)
+    else:
+        lines.append(f"gallery-dl: FAILED — {gdl.error}")
+
+    # Step 4: platform-specific
+    if is_facebook_url(url):
+        fb = facebook_download(url)
+        if fb and fb.ok:
+            lines.append(f"facebook: OK — {fb.filepath}")
+            if fb.filepath and os.path.exists(fb.filepath):
+                os.remove(fb.filepath)
+        else:
+            lines.append("facebook: FAILED")
+    elif is_instagram_url(url):
+        ig = instagram_download(url)
+        if ig and ig.ok:
+            lines.append(f"instagram: OK — {ig.filepath or ig.filepaths}")
+            if ig.filepath and os.path.exists(ig.filepath):
+                os.remove(ig.filepath)
+            for f in ig.filepaths:
+                if os.path.exists(f):
+                    os.remove(f)
+        else:
+            lines.append("instagram: FAILED")
+
+    # Step 5: HTTP fetch test
+    try:
+        async with httpx.AsyncClient(
+            proxy=PROXY if PROXY else None,
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
+            follow_redirects=True,
+        ) as client:
+            resp = await client.get(resolved)
+            lines.append(f"HTTP GET: {resp.status_code} (len={len(resp.text)})")
+    except Exception as exc:
+        lines.append(f"HTTP GET: FAILED — {str(exc)[:150]}")
+
+    msg = "\n".join(lines)
+    if len(msg) > 4000:
+        msg = msg[:4000] + "..."
+    await update.message.reply_text(msg)
 
 
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,6 +267,7 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("status", handle_status))
+    app.add_handler(CommandHandler("test", handle_test))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     print("Bot started. Listening for messages...")
