@@ -216,4 +216,62 @@ async def _download_captured(url, ext="mp4"):
         return None
 
     print(f"[browser] downloaded: {filepath} ({size} bytes)")
+
+    # Remux to proper MP4 for Telegram compatibility
+    if filepath.endswith(".mp4"):
+        filepath = await _remux_mp4(filepath)
+
+    return filepath
+
+
+async def _remux_mp4(filepath):
+    """Remux video to a Telegram-compatible MP4 using ffmpeg."""
+    import subprocess
+
+    out_path = filepath.replace(".mp4", "_fixed.mp4")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", filepath,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    print(f"[browser] remuxing: {' '.join(cmd)}")
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+            os.remove(filepath)
+            print(f"[browser] remux OK: {out_path}")
+            return out_path
+        else:
+            print(f"[browser] remux failed (code={proc.returncode}), trying transcode...")
+            if os.path.exists(out_path):
+                os.remove(out_path)
+    except Exception as exc:
+        print(f"[browser] remux error: {exc}")
+        if os.path.exists(out_path):
+            os.remove(out_path)
+
+    # Fallback: full transcode
+    cmd_transcode = [
+        "ffmpeg", "-y",
+        "-i", filepath,
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    try:
+        proc = subprocess.run(cmd_transcode, capture_output=True, text=True, timeout=120)
+        if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+            os.remove(filepath)
+            print(f"[browser] transcode OK: {out_path}")
+            return out_path
+        print(f"[browser] transcode failed: {proc.stderr[:200]}")
+    except Exception as exc:
+        print(f"[browser] transcode error: {exc}")
+
+    if os.path.exists(out_path):
+        os.remove(out_path)
     return filepath
