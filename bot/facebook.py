@@ -57,6 +57,16 @@ MOBILE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# Social media embed bots get special treatment — Facebook serves them og:video
+BOT_USER_AGENTS = [
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+    "TelegramBot (like TwitterBot)",
+    "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+    "WhatsApp/2.23.20.0",
+    "Twitterbot/1.0",
+    "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)",
+]
+
 
 def _unescape(url):
     return url.replace("\\u0025", "%").replace("\\u0026", "&").replace("\\/", "/").replace("\\", "")
@@ -150,6 +160,91 @@ def _resolve_url(url):
     except Exception as exc:
         print(f"[facebook] resolve failed: {exc}")
         return url
+
+
+# ── Strategy 1b: Embed bot User-Agents ────────────────────────────────
+
+def _try_bot_ua(url):
+    """Fetch page pretending to be a social embed bot (Telegram, Discord, etc.).
+    Facebook serves og:video tags to these bots for link previews."""
+    print(f"[facebook] trying bot UA strategy...")
+
+    for ua in BOT_USER_AGENTS:
+        bot_name = ua.split("/")[0].split("(")[0].strip()
+        try:
+            headers = {"User-Agent": ua, "Accept": "*/*"}
+            resp = _fetch(url, headers=headers)
+            if resp.status_code != 200:
+                print(f"[facebook] {bot_name}: status {resp.status_code}")
+                continue
+            html = resp.text
+            print(f"[facebook] {bot_name}: page len={len(html)}")
+
+            # Look for og:video — this is what embed bots get
+            og_videos = _OG_VIDEO_RE.findall(html)
+            if og_videos:
+                video_url = _unescape(og_videos[0])
+                print(f"[facebook] {bot_name} found og:video: {video_url[:80]}...")
+                filepath = _download_video_url(video_url)
+                if filepath:
+                    return {"type": "video", "file": filepath}
+
+            # Also check for any video URL in the response
+            video_url = _extract_best_video(html)
+            if video_url:
+                print(f"[facebook] {bot_name} found video URL: {video_url[:80]}...")
+                filepath = _download_video_url(video_url)
+                if filepath:
+                    return {"type": "video", "file": filepath}
+
+        except Exception as exc:
+            print(f"[facebook] {bot_name} failed: {exc}")
+            continue
+
+    return None
+
+
+# ── Strategy 1c: Facebook video embed plugin ──────────────────────────
+
+def _try_embed_plugin(url):
+    """Use Facebook's embed plugin endpoint which serves video for embedding."""
+    # Extract video ID from URL
+    video_id = re.search(r'/(?:reel|video|watch)/(\d+)', url)
+    if not video_id:
+        video_id = re.search(r'[?&]v=(\d+)', url)
+    if not video_id:
+        return None
+
+    vid = video_id.group(1)
+    embed_url = f"https://www.facebook.com/plugins/video.php?href=https%3A%2F%2Fwww.facebook.com%2Freel%2F{vid}&show_text=false"
+    print(f"[facebook] trying embed plugin: {embed_url}")
+
+    try:
+        resp = _fetch(embed_url)
+        if resp.status_code != 200:
+            print(f"[facebook] embed plugin returned {resp.status_code}")
+            return None
+        html = resp.text
+        print(f"[facebook] embed plugin page len={len(html)}")
+
+        video_url = _extract_best_video(html)
+        if video_url:
+            print(f"[facebook] embed plugin found video: {video_url[:80]}...")
+            filepath = _download_video_url(video_url)
+            if filepath:
+                return {"type": "video", "file": filepath}
+
+        # Check og:video
+        og_videos = _OG_VIDEO_RE.findall(html)
+        if og_videos:
+            video_url = _unescape(og_videos[0])
+            filepath = _download_video_url(video_url)
+            if filepath:
+                return {"type": "video", "file": filepath}
+
+    except Exception as exc:
+        print(f"[facebook] embed plugin failed: {exc}")
+    return None
 
 
 # ── Strategy 2: mbasic.facebook.com ───────────────────────────────────
@@ -274,6 +369,8 @@ def facebook_download(url):
     resolved = _resolve_url(url)
 
     strategies = [
+        ("bot_ua", lambda: _try_bot_ua(resolved)),
+        ("embed_plugin", lambda: _try_embed_plugin(resolved)),
         ("mbasic", lambda: _try_mbasic(resolved)),
         ("mobile", lambda: _try_mobile(resolved)),
         ("desktop", lambda: _try_desktop(resolved)),
