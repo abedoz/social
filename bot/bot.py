@@ -286,28 +286,15 @@ async def handle_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 analysis.append("No known video keywords found")
 
-            # Find fbcdn video URLs with context
-            video_fbcdn = _re.findall(r'.{0,30}(https?:\\?/\\?/video[^"<>\s\\]{10,300})', h)
-            if video_fbcdn:
-                analysis.append(f"\nfbcdn video URLs ({len(video_fbcdn)}):")
-                for ctx in video_fbcdn[:2]:
-                    analysis.append(f"  {_unescape(ctx[:180])}")
-            else:
-                # Show any fbcdn with /v/ path
-                v_fbcdn = _re.findall(r'.{0,20}(https?:\\?/\\?/[^"<>\s\\]*fbcdn\.net\\?/v\\?/[^"<>\s\\]{10,200})', h)
-                if v_fbcdn:
-                    analysis.append(f"\nfbcdn /v/ URLs ({len(v_fbcdn)}):")
-                    for ctx in v_fbcdn[:2]:
-                        analysis.append(f"  {_unescape(ctx[:180])}")
-                else:
-                    # Just show ANY fbcdn with surrounding key name
-                    samples = _re.findall(r'("[a-zA-Z_]{3,30}":\s*"https?:\\?/\\?/[^"]*fbcdn[^"]{10,200}")', h)
-                    if samples:
-                        analysis.append(f"\nfbcdn key:value samples ({len(samples)}):")
-                        for s in samples[:3]:
-                            analysis.append(f"  {_unescape(s[:200])}")
-                    else:
-                        analysis.append("\nNo fbcdn video/v/ URLs found")
+            # Extract context around key video keywords
+            for kw in ["progressive", "representations"]:
+                positions = [m.start() for m in _re.finditer(kw, h)]
+                if positions:
+                    analysis.append(f"\n'{kw}' context ({len(positions)} hits):")
+                    for pos in positions[:1]:
+                        snippet = h[max(0, pos-20):pos+300]
+                        snippet = _unescape(snippet.replace("\n", " "))
+                        analysis.append(f"  ...{snippet[:280]}...")
 
         except Exception as exc:
             analysis.append(f"FAILED: {str(exc)[:100]}")
