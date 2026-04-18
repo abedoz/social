@@ -277,7 +277,7 @@ def _gallery_dl_download(url):
 # ── main download logic ──────────────────────────────────────────────
 
 def _sync_download(url, mode):
-    """Try yt-dlp → gallery-dl → Instagram-specific scraping."""
+    """Try yt-dlp → gallery-dl → platform scrapers → headless browser."""
     # 1. Try yt-dlp
     try:
         info = _extract_info(url)
@@ -312,6 +312,16 @@ def _sync_download(url, mode):
         fb_result = facebook_download(url)
         if fb_result and fb_result.ok:
             return fb_result
+
+    # 4. Last resort: headless browser
+    print("[browser] trying headless browser fallback...")
+    try:
+        from browser import browser_download
+        br_result = asyncio.run(browser_download(url))
+        if br_result and br_result.ok:
+            return br_result
+    except Exception as exc:
+        print(f"[browser] fallback failed: {exc}")
 
     return DownloadResult(error="All download methods failed")
 

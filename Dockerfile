@@ -10,6 +10,9 @@ WORKDIR /app
 COPY bot/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install Playwright Chromium browser (headless fallback for stubborn sites)
+RUN playwright install --with-deps chromium
+
 COPY bot/ .
 COPY start.sh .
 RUN chmod +x start.sh
