@@ -70,17 +70,28 @@ async def _send_result(result, query):
 
     # Single file
     try:
+        # Sanitize title for use as filename
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", result.title or "media")[:100].strip()
+
         if result.is_image:
-            await query.message.reply_photo(photo=open(result.filepath, "rb"))
+            await query.message.reply_photo(
+                photo=open(result.filepath, "rb"),
+                caption=result.title,
+            )
         elif result.is_audio:
+            ext = os.path.splitext(result.filepath)[1] or ".mp3"
             await query.message.reply_audio(
                 audio=open(result.filepath, "rb"),
                 title=result.title,
+                filename=f"{safe_title}{ext}",
             )
         else:
+            ext = os.path.splitext(result.filepath)[1] or ".mp4"
             await query.message.reply_video(
                 video=open(result.filepath, "rb"),
                 supports_streaming=True,
+                caption=result.title,
+                filename=f"{safe_title}{ext}",
             )
         await query.delete_message()
     finally:
