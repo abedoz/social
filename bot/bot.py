@@ -208,16 +208,44 @@ async def handle_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             lines.append("instagram: FAILED")
 
-    # Step 5: HTTP fetch test
+    # Step 5: HTTP fetch + page analysis
     try:
         async with httpx.AsyncClient(
-            proxy=PROXY if PROXY else None,
-            timeout=10,
-            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"},
             follow_redirects=True,
         ) as client:
             resp = await client.get(resolved)
-            lines.append(f"HTTP GET: {resp.status_code} (len={len(resp.text)})")
+            html = resp.text
+            lines.append(f"HTTP GET: {resp.status_code} (len={len(html)})")
+
+            # Page analysis — what keywords exist
+            lines.append(f"\nPage analysis:")
+            lines.append(f"  'fbcdn': {html.count('fbcdn')}")
+            lines.append(f"  'playable_url': {html.count('playable_url')}")
+            lines.append(f"  'video_url': {html.count('video_url')}")
+            lines.append(f"  'hd_src': {html.count('hd_src')}")
+            lines.append(f"  'sd_src': {html.count('sd_src')}")
+            lines.append(f"  'og:video': {html.count('og:video')}")
+            lines.append(f"  'browser_native': {html.count('browser_native')}")
+
+            # Try to find any fbcdn video URL
+            import re
+            fbcdn_urls = re.findall(r'(https?:[^"]*?fbcdn[^"]*?video[^"]{0,200})', html)
+            if fbcdn_urls:
+                lines.append(f"\nFound {len(fbcdn_urls)} fbcdn video URL(s):")
+                for u in fbcdn_urls[:3]:
+                    lines.append(f"  {u[:120]}...")
+            else:
+                # Any fbcdn URL at all?
+                any_fbcdn = re.findall(r'(https?:[^"]*?fbcdn\.net[^"]{0,100})', html)
+                if any_fbcdn:
+                    lines.append(f"\nFound {len(any_fbcdn)} fbcdn URLs (no 'video' in path):")
+                    for u in any_fbcdn[:3]:
+                        lines.append(f"  {u[:120]}...")
+                else:
+                    lines.append("\nNo fbcdn URLs found in page")
+
     except Exception as exc:
         lines.append(f"HTTP GET: FAILED — {str(exc)[:150]}")
 
