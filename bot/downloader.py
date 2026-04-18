@@ -1,6 +1,8 @@
 import asyncio
+import glob
 import os
 import re
+import subprocess
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
@@ -28,10 +30,10 @@ BROWSER_HEADERS = {
     "Sec-Ch-Ua-Platform": '"Windows"',
 }
 
-# TLS impersonation targets to cycle through on failure
 IMPERSONATE_TARGETS = ["chrome", "chrome110", "edge99", "safari15_5"]
 
-# Check if curl_cffi is available for TLS impersonation
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+
 try:
     import curl_cffi  # noqa: F401
     HAS_CURL_CFFI = True
@@ -43,7 +45,6 @@ MODE_LOWEST = "lowest"
 MODE_AUDIO = "audio"
 MODE_VIDEO = "video"
 
-# Tracking parameters to strip from URLs
 TRACKING_PARAMS = {
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
     "si", "feature", "fbclid", "igshid", "s", "t", "ref",
@@ -51,38 +52,34 @@ TRACKING_PARAMS = {
 
 
 class DownloadResult:
-    def __init__(self, filepath=None, is_audio=False, stream_url=None, title=None, error=None):
+    def __init__(self, filepath=None, filepaths=None, is_audio=False, is_image=False,
+                 stream_url=None, title=None, error=None):
         self.filepath = filepath
+        self.filepaths = filepaths or []
         self.is_audio = is_audio
+        self.is_image = is_image
         self.stream_url = stream_url
         self.title = title or "media"
         self.error = error
 
     @property
     def ok(self):
-        return self.error is None and (self.filepath or self.stream_url)
+        return self.error is None and (self.filepath or self.filepaths or self.stream_url)
 
 
 def _clean_url(url):
-    """Strip tracking params and normalize the URL for better extraction."""
     parsed = urlparse(url)
-
-    # Strip tracking parameters
     params = parse_qs(parsed.query, keep_blank_values=False)
     cleaned = {k: v for k, v in params.items() if k not in TRACKING_PARAMS}
     clean_query = urlencode(cleaned, doseq=True)
-
-    # Normalize x.com → twitter.com (yt-dlp has better twitter.com support)
     hostname = parsed.hostname or ""
     netloc = parsed.netloc
     if hostname == "x.com":
         netloc = netloc.replace("x.com", "twitter.com", 1)
-
     return urlunparse(parsed._replace(netloc=netloc, query=clean_query))
 
 
 def _base_opts():
-    """Common yt-dlp options shared across all calls."""
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -124,12 +121,14 @@ def _file_under_limit(path):
         return False
 
 
+def _is_image(filepath):
+    return Path(filepath).suffix.lower() in IMAGE_EXTENSIONS
+
+
 def _extract_info(url):
-    """Extract metadata, cycling through impersonation targets on failure."""
     url = _clean_url(url)
     last_error = None
 
-    # Try with each impersonation target
     if HAS_CURL_CFFI:
         for target in IMPERSONATE_TARGETS:
             try:
@@ -142,7 +141,6 @@ def _extract_info(url):
                 print(f"[yt-dlp] extract failed with impersonate={target}: {exc}")
                 continue
 
-    # Attempt without impersonation
     try:
         opts = _base_opts()
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -151,7 +149,6 @@ def _extract_info(url):
         last_error = exc
         print(f"[yt-dlp] extract failed without impersonation: {exc}")
 
-    # Last resort: force generic extractor
     try:
         opts = _base_opts()
         opts["force_generic_extractor"] = True
@@ -164,7 +161,6 @@ def _extract_info(url):
 
 
 def _download_with_format(url, format_spec, merge=True):
-    """Download with a specific format, cycling impersonation targets on failure."""
     url = _clean_url(url)
     last_error = None
 
@@ -188,7 +184,6 @@ def _download_with_format(url, format_spec, merge=True):
             print(f"[yt-dlp] download failed with impersonate={target}: {exc}")
             continue
 
-    # Last resort: force generic extractor
     try:
         uid = uuid.uuid4().hex[:12]
         output_path = os.path.join(DOWNLOAD_DIR, f"{uid}.%(ext)s")
@@ -209,7 +204,6 @@ def _download_with_format(url, format_spec, merge=True):
 
 
 def _try_download(url, format_spec, is_audio=False, title="media", merge=True):
-    """Attempt a download and return a DownloadResult, or None if file is too large."""
     filepath, _ = _download_with_format(url, format_spec, merge=merge)
     if os.path.exists(filepath) and _file_under_limit(filepath):
         return DownloadResult(filepath=filepath, is_audio=is_audio, title=title)
@@ -218,23 +212,89 @@ def _try_download(url, format_spec, is_audio=False, title="media", merge=True):
     return None
 
 
-def _sync_download(url, mode):
-    """Synchronous download with mode selection."""
-    info = _extract_info(url)
-    title = info.get("title", "media")
+# ── gallery-dl fallback ──────────────────────────────────────────────
 
-    if mode == MODE_AUDIO:
-        return _download_audio(url, title)
-    elif mode == MODE_VIDEO:
-        return _download_video_only(url, title)
-    elif mode == MODE_LOWEST:
-        return _download_lowest(url, title)
-    else:
-        return _download_highest(url, title, info)
+def _gallery_dl_download(url):
+    """Use gallery-dl to download images/carousels. Returns a DownloadResult."""
+    url = _clean_url(url)
+    uid = uuid.uuid4().hex[:8]
+    dest_dir = os.path.join(DOWNLOAD_DIR, f"gdl_{uid}")
+    os.makedirs(dest_dir, exist_ok=True)
+
+    cmd = [
+        "gallery-dl",
+        "--dest", dest_dir,
+        "--no-mtime",
+        "--filename", "{num:>02}.{extension}",
+        "--directory", ".",
+    ]
+
+    if PROXY:
+        cmd.extend(["--proxy", PROXY])
+
+    cmd.append(url)
+
+    print(f"[gallery-dl] running: {' '.join(cmd)}")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        print(f"[gallery-dl] exit code: {proc.returncode}")
+        if proc.stderr:
+            print(f"[gallery-dl] stderr: {proc.stderr[:500]}")
+    except subprocess.TimeoutExpired:
+        return DownloadResult(error="timeout")
+    except Exception as exc:
+        print(f"[gallery-dl] exception: {exc}")
+        return DownloadResult(error=str(exc))
+
+    # Collect downloaded files
+    files = sorted(glob.glob(os.path.join(dest_dir, "*")))
+    files = [f for f in files if os.path.isfile(f)]
+
+    if not files:
+        os.rmdir(dest_dir)
+        return DownloadResult(error="gallery-dl downloaded 0 files")
+
+    # Check if all files are images
+    all_images = all(_is_image(f) for f in files)
+
+    if len(files) == 1:
+        f = files[0]
+        if _is_image(f):
+            return DownloadResult(filepath=f, is_image=True, title="image")
+        else:
+            return DownloadResult(filepath=f, is_audio=False, title="media")
+
+    # Multiple files (carousel)
+    if all_images:
+        return DownloadResult(filepaths=files, is_image=True, title="carousel")
+
+    # Mixed content — return first file
+    return DownloadResult(filepath=files[0], is_image=_is_image(files[0]), title="media")
+
+
+# ── main download logic ──────────────────────────────────────────────
+
+def _sync_download(url, mode):
+    """Try yt-dlp first, fall back to gallery-dl on failure."""
+    try:
+        info = _extract_info(url)
+        title = info.get("title", "media")
+
+        if mode == MODE_AUDIO:
+            return _download_audio(url, title)
+        elif mode == MODE_VIDEO:
+            return _download_video_only(url, title)
+        elif mode == MODE_LOWEST:
+            return _download_lowest(url, title)
+        else:
+            return _download_highest(url, title, info)
+    except Exception as exc:
+        print(f"[yt-dlp] all attempts failed for {url}: {exc}")
+        print("[gallery-dl] trying fallback...")
+        return _gallery_dl_download(url)
 
 
 def _download_highest(url, title, info=None):
-    """Best video+audio merged, with resolution step-down if over size limit."""
     try:
         result = _try_download(
             url, "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
@@ -258,13 +318,11 @@ def _download_highest(url, title, info=None):
         except Exception:
             continue
 
-    # Fallback: stream URL
     fallback_url = (info or {}).get("url") or (info or {}).get("webpage_url") or url
     return DownloadResult(stream_url=fallback_url, title=title)
 
 
 def _download_lowest(url, title):
-    """Lowest quality video+audio."""
     try:
         result = _try_download(
             url, "worstvideo+worstaudio/worst",
@@ -278,7 +336,6 @@ def _download_lowest(url, title):
 
 
 def _download_audio(url, title):
-    """Audio only, best quality."""
     try:
         result = _try_download(
             url, f"bestaudio[filesize<={MAX_FILE_MB}M]/bestaudio",
@@ -292,7 +349,6 @@ def _download_audio(url, title):
 
 
 def _download_video_only(url, title):
-    """Video only, no audio track."""
     try:
         result = _try_download(
             url, "bestvideo[ext=mp4]/bestvideo",
@@ -318,7 +374,6 @@ def _download_video_only(url, title):
 
 
 async def download_media(url, mode=MODE_HIGHEST):
-    """Async wrapper that runs the blocking download in a thread with a timeout."""
     loop = asyncio.get_event_loop()
     try:
         result = await asyncio.wait_for(

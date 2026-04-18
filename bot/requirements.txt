@@ -4,3 +4,4 @@ python-dotenv>=1.0.0
 curl_cffi>=0.7.0
 httpx[socks]>=0.27.0
 PySocks>=1.7.1
+gallery-dl>=1.27.0

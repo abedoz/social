@@ -1,10 +1,11 @@
 import os
 import re
+import shutil
 import subprocess
 import uuid
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -29,7 +30,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     for url in urls:
-        # Store URL with a short key to fit Telegram's 64-byte callback_data limit
         key = uuid.uuid4().hex[:8]
         context.bot_data[key] = url
 
@@ -41,6 +41,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         await update.message.reply_text("Choose download format:", reply_markup=keyboard)
+
+
+async def _send_result(result, query):
+    """Send the download result back to the chat."""
+    # Multiple images (carousel)
+    if result.filepaths:
+        try:
+            # Telegram allows max 10 items per media group
+            for i in range(0, len(result.filepaths), 10):
+                batch = result.filepaths[i:i + 10]
+                media = [InputMediaPhoto(open(f, "rb")) for f in batch]
+                await query.message.reply_media_group(media=media)
+            await query.delete_message()
+        finally:
+            for f in result.filepaths:
+                if os.path.exists(f):
+                    os.remove(f)
+            # Clean up the gallery-dl subdirectory
+            for f in result.filepaths:
+                parent = os.path.dirname(f)
+                if parent != os.path.dirname(parent) and os.path.isdir(parent):
+                    shutil.rmtree(parent, ignore_errors=True)
+                    break
+        return
+
+    # Single file
+    try:
+        if result.is_image:
+            await query.message.reply_photo(photo=open(result.filepath, "rb"))
+        elif result.is_audio:
+            await query.message.reply_audio(
+                audio=open(result.filepath, "rb"),
+                title=result.title,
+            )
+        else:
+            await query.message.reply_video(
+                video=open(result.filepath, "rb"),
+                supports_streaming=True,
+            )
+        await query.delete_message()
+    finally:
+        if result.filepath and os.path.exists(result.filepath):
+            os.remove(result.filepath)
+            parent = os.path.dirname(result.filepath)
+            if parent.startswith(os.path.join("/tmp", "tgbot")) and os.path.isdir(parent):
+                try:
+                    os.rmdir(parent)
+                except OSError:
+                    pass
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -73,29 +122,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # Fallback: send stream URL if no file was downloaded
-        if result.stream_url and not result.filepath:
+        if result.stream_url and not result.filepath and not result.filepaths:
             await query.edit_message_text(
                 f"File too large for Telegram. Direct link:\n{result.stream_url}"
             )
             return
 
-        # Send the file
-        try:
-            if result.is_audio:
-                await query.message.reply_audio(
-                    audio=open(result.filepath, "rb"),
-                    title=result.title,
-                )
-            else:
-                await query.message.reply_video(
-                    video=open(result.filepath, "rb"),
-                    supports_streaming=True,
-                )
-            await query.delete_message()
-        finally:
-            if result.filepath and os.path.exists(result.filepath):
-                os.remove(result.filepath)
+        await _send_result(result, query)
 
     except Exception as exc:
         print(f"Unhandled error for {url}: {exc}")
@@ -111,7 +144,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = []
 
-    # Direct IP (no proxy)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get("https://api.ipify.org?format=json")
@@ -120,7 +152,6 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         lines.append(f"Direct IP: failed ({exc})")
 
-    # Test SOCKS5 proxy
     try:
         async with httpx.AsyncClient(proxy="socks5://localhost:1055", timeout=10) as client:
             resp = await client.get("https://api.ipify.org?format=json")
@@ -128,7 +159,6 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         lines.append(f"SOCKS5:    failed ({exc})")
 
-    # Test HTTP proxy
     try:
         async with httpx.AsyncClient(proxy="http://localhost:1056", timeout=10) as client:
             resp = await client.get("https://api.ipify.org?format=json")
@@ -136,7 +166,6 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         lines.append(f"HTTP prx:  failed ({exc})")
 
-    # Tailscale status
     try:
         ts = subprocess.run(["tailscale", "status", "--json=false"],
                             capture_output=True, text=True, timeout=5)
