@@ -10,6 +10,7 @@ from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 import yt_dlp
 
 from config import DOWNLOAD_DIR, MAX_FILE_MB, PROXY
+from facebook import is_facebook_url, facebook_download
 from instagram import is_instagram_url, instagram_download
 
 RESOLUTION_STEPS = [1080, 720, 480, 360]
@@ -299,12 +300,18 @@ def _sync_download(url, mode):
     if gdl_result.ok:
         return gdl_result
 
-    # 3. Try Instagram-specific scraping if it's an Instagram URL
+    # 3. Try platform-specific scrapers
     if is_instagram_url(url):
         print("[instagram] trying Instagram-specific fallback...")
         ig_result = instagram_download(url)
         if ig_result and ig_result.ok:
             return ig_result
+
+    if is_facebook_url(url):
+        print("[facebook] trying Facebook-specific fallback...")
+        fb_result = facebook_download(url)
+        if fb_result and fb_result.ok:
+            return fb_result
 
     return DownloadResult(error="All download methods failed")
 
