@@ -10,6 +10,7 @@ from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 import yt_dlp
 
 from config import DOWNLOAD_DIR, MAX_FILE_MB, PROXY
+from instagram import is_instagram_url, instagram_download
 
 RESOLUTION_STEPS = [1080, 720, 480, 360]
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -275,7 +276,8 @@ def _gallery_dl_download(url):
 # ── main download logic ──────────────────────────────────────────────
 
 def _sync_download(url, mode):
-    """Try yt-dlp first, fall back to gallery-dl on failure."""
+    """Try yt-dlp → gallery-dl → Instagram-specific scraping."""
+    # 1. Try yt-dlp
     try:
         info = _extract_info(url)
         title = info.get("title", "media")
@@ -290,8 +292,21 @@ def _sync_download(url, mode):
             return _download_highest(url, title, info)
     except Exception as exc:
         print(f"[yt-dlp] all attempts failed for {url}: {exc}")
-        print("[gallery-dl] trying fallback...")
-        return _gallery_dl_download(url)
+
+    # 2. Try gallery-dl
+    print("[gallery-dl] trying fallback...")
+    gdl_result = _gallery_dl_download(url)
+    if gdl_result.ok:
+        return gdl_result
+
+    # 3. Try Instagram-specific scraping if it's an Instagram URL
+    if is_instagram_url(url):
+        print("[instagram] trying Instagram-specific fallback...")
+        ig_result = instagram_download(url)
+        if ig_result and ig_result.ok:
+            return ig_result
+
+    return DownloadResult(error="All download methods failed")
 
 
 def _download_highest(url, title, info=None):
