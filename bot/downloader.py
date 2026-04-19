@@ -287,19 +287,11 @@ def _sync_download_instagram(url, mode):
     """Instagram-specific flow: yt-dlp for video, gallery-dl only for images."""
     url_clean = _clean_url(url)
 
-    # 1. Try yt-dlp extraction
-    info = None
+    # 1. Try yt-dlp extraction + download
     try:
         info = _extract_info(url_clean)
-    except Exception as exc:
-        print(f"[yt-dlp] Instagram extract failed: {exc}")
-        # yt-dlp failed — report the error, do NOT fall back to gallery-dl
-        return DownloadResult(error=str(exc))
+        title = info.get("title", "media")
 
-    title = info.get("title", "media")
-
-    # 2. Try yt-dlp download
-    try:
         if mode == MODE_AUDIO:
             result = _download_audio(url_clean, title)
         elif mode == MODE_VIDEO:
@@ -309,32 +301,32 @@ def _sync_download_instagram(url, mode):
         else:
             result = _download_highest(url_clean, title, info)
 
-        # Check if yt-dlp actually produced a file
+        # yt-dlp produced a file — done, no gallery-dl needed
         if result and result.filepath and os.path.exists(result.filepath):
             return result
-
-        # yt-dlp returned a stream_url fallback — still counts as handled
         if result and result.stream_url:
             return result
 
-    except Exception as exc:
-        print(f"[yt-dlp] Instagram download failed: {exc}")
-        # yt-dlp could extract info but failed to download — report error
-        return DownloadResult(error=str(exc))
+        # yt-dlp extracted info but produced no file — image post
+        print("[yt-dlp] extracted info but no video file — image post, trying gallery-dl")
 
-    # 3. yt-dlp succeeded but downloaded 0 files — this is an image post
-    print("[yt-dlp] extracted info but no video file — image post, trying gallery-dl")
+    except Exception as exc:
+        print(f"[yt-dlp] Instagram failed: {exc}")
+        # yt-dlp failed entirely — fall through to image-only methods
+
+    # 2. gallery-dl for image posts
+    print("[gallery-dl] trying for Instagram images...")
     gdl_result = _gallery_dl_download(url_clean)
     if gdl_result.ok:
         return gdl_result
 
-    # 4. Instagram scraper fallback for images
+    # 3. Instagram scraper fallback
     print("[instagram] trying Instagram-specific fallback...")
     ig_result = instagram_download(url)
     if ig_result and ig_result.ok:
         return ig_result
 
-    # 5. Browser fallback
+    # 4. Browser fallback
     print("[browser] trying headless browser fallback...")
     try:
         from browser import browser_download
