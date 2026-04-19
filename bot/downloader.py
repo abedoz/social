@@ -312,7 +312,6 @@ def _sync_download_instagram(url, mode):
 
     except Exception as exc:
         print(f"[yt-dlp] Instagram failed: {exc}")
-        # yt-dlp failed entirely — fall through to image-only methods
 
     # 2. gallery-dl for image posts
     print("[gallery-dl] trying for Instagram images...")
@@ -320,23 +319,16 @@ def _sync_download_instagram(url, mode):
     if gdl_result.ok:
         return gdl_result
 
-    # 3. Instagram scraper fallback
+    # 3. Instagram scraper fallback (embed page, proxy frontends)
     print("[instagram] trying Instagram-specific fallback...")
     ig_result = instagram_download(url)
     if ig_result and ig_result.ok:
         return ig_result
 
-    # 4. Browser fallback
-    print("[browser] trying headless browser fallback...")
-    try:
-        from browser import browser_download
-        br_result = asyncio.run(browser_download(url))
-        if br_result and br_result.ok:
-            return br_result
-    except Exception as exc:
-        print(f"[browser] fallback failed: {exc}")
-
-    return DownloadResult(error="All download methods failed")
+    # No browser fallback for Instagram — it captures login wall garbage
+    return DownloadResult(
+        error="Instagram requires login. This content is not accessible without authentication."
+    )
 
 
 def _sync_download_generic(url, mode):
