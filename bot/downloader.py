@@ -9,7 +9,7 @@ from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 import yt_dlp
 
-from config import DOWNLOAD_DIR, MAX_FILE_MB, PROXY
+from config import COOKIES_FILE, DOWNLOAD_DIR, MAX_FILE_MB, PROXY
 from facebook import is_facebook_url, facebook_download
 from instagram import is_instagram_url, instagram_download
 
@@ -102,6 +102,8 @@ def _base_opts():
     }
     if PROXY:
         opts["proxy"] = PROXY
+    if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
     return opts
 
 
@@ -233,6 +235,8 @@ def _gallery_dl_download(url):
 
     if PROXY:
         cmd.extend(["--proxy", PROXY])
+    if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+        cmd.extend(["--cookies", COOKIES_FILE])
 
     cmd.append(url)
 

@@ -18,3 +18,6 @@ MAX_FILE_MB = int(os.getenv("MAX_FILE_MB", "50"))
 
 # Proxy for yt-dlp — defaults to Tailscale's local SOCKS5 proxy
 PROXY = os.getenv("PROXY", "socks5://localhost:1055")
+
+# Cookie file path (decoded from COOKIES_B64 by start.sh)
+COOKIES_FILE = os.getenv("COOKIES_FILE", "")

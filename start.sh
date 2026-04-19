@@ -35,5 +35,16 @@ else
     echo "WARNING: TAILSCALE_AUTHKEY not set. Skipping Tailscale."
 fi
 
+echo "=== Cookies ==="
+COOKIES_FILE="/tmp/cookies.txt"
+if [ -n "$COOKIES_B64" ]; then
+    echo "$COOKIES_B64" | base64 -d > "$COOKIES_FILE"
+    echo "Cookies decoded to $COOKIES_FILE ($(wc -l < "$COOKIES_FILE") lines)"
+else
+    echo "COOKIES_B64 not set. Running without cookies."
+    COOKIES_FILE=""
+fi
+export COOKIES_FILE
+
 echo "=== Starting Bot ==="
 exec python bot.py
