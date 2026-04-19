@@ -49,7 +49,7 @@ MODE_VIDEO = "video"
 
 TRACKING_PARAMS = {
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "si", "feature", "fbclid", "igshid", "s", "t", "ref",
+    "si", "feature", "fbclid", "igshid", "igsh", "img_index", "s", "t", "ref",
 }
 
 

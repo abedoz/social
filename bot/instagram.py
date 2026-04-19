@@ -6,7 +6,6 @@ Fallback chain:
 3. Direct page scraping — extract CDN URLs from page HTML/JSON
 """
 
-import json
 import os
 import re
 import uuid
@@ -17,20 +16,16 @@ from config import DOWNLOAD_DIR, PROXY
 
 _TIMEOUT = 30
 
-# Regex to extract Instagram post/reel shortcode from URL
 _SHORTCODE_RE = re.compile(
     r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)"
 )
 
-# Patterns to find media URLs in HTML/JSON responses
-_VIDEO_URL_RE = re.compile(r'"video_url"\s*:\s*"(https?://[^"]+)"')
-_DISPLAY_URL_RE = re.compile(r'"display_url"\s*:\s*"(https?://[^"]+)"')
-_DISPLAY_SRC_RE = re.compile(r'"display_src"\s*:\s*"(https?://[^"]+)"')
-_OG_VIDEO_RE = re.compile(r'<meta\s+(?:property|name)="og:video"\s+content="(https?://[^"]+)"', re.I)
-_OG_IMAGE_RE = re.compile(r'<meta\s+(?:property|name)="og:image"\s+content="(https?://[^"]+)"', re.I)
-_EMBED_VIDEO_RE = re.compile(r'<video[^>]+src="(https?://[^"]+)"', re.I)
-_EMBED_IMG_RE = re.compile(r'class="[^"]*EmbeddedMedia[^"]*"[^>]*src="(https?://[^"]+)"', re.I)
-_CAROUSEL_RE = re.compile(r'"image_versions2".*?"url"\s*:\s*"(https?://[^"]+)"')
+_VIDEO_URL_RE = re.compile(r'"video_url"\s*:\s*"(https?:[^"]+)"')
+_DISPLAY_URL_RE = re.compile(r'"display_url"\s*:\s*"(https?:[^"]+)"')
+_DISPLAY_SRC_RE = re.compile(r'"display_src"\s*:\s*"(https?:[^"]+)"')
+_OG_VIDEO_RE = re.compile(r'<meta\s+(?:property|name)="og:video"\s+content="(https?:[^"]+)"', re.I)
+_OG_IMAGE_RE = re.compile(r'<meta\s+(?:property|name)="og:image"\s+content="(https?:[^"]+)"', re.I)
+_EMBED_VIDEO_RE = re.compile(r'<video[^>]+src="(https?:[^"]+)"', re.I)
 
 HEADERS = {
     "User-Agent": (
@@ -51,15 +46,17 @@ def _get_shortcode(url):
 
 
 def _unescape(url):
-    """Unescape JSON-encoded unicode and backslash sequences in URLs."""
     return url.replace("\\u0026", "&").replace("\\/", "/").replace("\\", "")
 
 
-def _make_client():
-    kwargs = {"timeout": _TIMEOUT, "headers": HEADERS, "follow_redirects": True}
-    if PROXY:
-        kwargs["proxy"] = PROXY
-    return httpx.Client(**kwargs)
+def _clean_ig_url(url):
+    """Strip tracking params from Instagram URLs."""
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=False)
+    strip = {"igsh", "igshid", "img_index", "utm_source", "utm_medium", "fbclid", "ref"}
+    cleaned = {k: v for k, v in params.items() if k not in strip}
+    return urlunparse(parsed._replace(query=urlencode(cleaned, doseq=True)))
 
 
 def _fetch(url, headers=None):
@@ -68,7 +65,9 @@ def _fetch(url, headers=None):
     if PROXY:
         try:
             with httpx.Client(timeout=_TIMEOUT, headers=h, follow_redirects=True, proxy=PROXY) as client:
-                return client.get(url)
+                resp = client.get(url)
+                if resp.status_code < 400:
+                    return resp
         except Exception as exc:
             print(f"[instagram] proxy fetch failed, trying direct: {exc}")
     with httpx.Client(timeout=_TIMEOUT, headers=h, follow_redirects=True) as client:
@@ -79,37 +78,35 @@ def _download_url(media_url, ext="jpg"):
     """Download a single URL to the temp directory."""
     uid = uuid.uuid4().hex[:12]
     filepath = os.path.join(DOWNLOAD_DIR, f"{uid}.{ext}")
-    with _make_client() as client:
-        resp = client.get(media_url)
-        resp.raise_for_status()
-        content_type = resp.headers.get("content-type", "")
-        if "video" in content_type:
-            filepath = filepath.rsplit(".", 1)[0] + ".mp4"
-        elif "png" in content_type:
-            filepath = filepath.rsplit(".", 1)[0] + ".png"
-        with open(filepath, "wb") as f:
-            f.write(resp.content)
+    resp = _fetch(media_url)
+    resp.raise_for_status()
+    content_type = resp.headers.get("content-type", "")
+    if "video" in content_type:
+        filepath = filepath.rsplit(".", 1)[0] + ".mp4"
+    elif "png" in content_type:
+        filepath = filepath.rsplit(".", 1)[0] + ".png"
+    with open(filepath, "wb") as f:
+        f.write(resp.content)
     return filepath
 
 
 def _download_urls(media_urls, ext="jpg"):
     """Download multiple URLs, return list of file paths."""
     paths = []
-    with _make_client() as client:
-        for i, url in enumerate(media_urls):
-            uid = uuid.uuid4().hex[:12]
-            filepath = os.path.join(DOWNLOAD_DIR, f"{uid}_{i:02d}.{ext}")
-            try:
-                resp = client.get(url)
-                resp.raise_for_status()
-                content_type = resp.headers.get("content-type", "")
-                if "video" in content_type:
-                    filepath = filepath.rsplit(".", 1)[0] + ".mp4"
-                with open(filepath, "wb") as f:
-                    f.write(resp.content)
-                paths.append(filepath)
-            except Exception as exc:
-                print(f"[instagram] failed to download {url}: {exc}")
+    for i, url in enumerate(media_urls):
+        uid = uuid.uuid4().hex[:12]
+        filepath = os.path.join(DOWNLOAD_DIR, f"{uid}_{i:02d}.{ext}")
+        try:
+            resp = _fetch(url)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "")
+            if "video" in content_type:
+                filepath = filepath.rsplit(".", 1)[0] + ".mp4"
+            with open(filepath, "wb") as f:
+                f.write(resp.content)
+            paths.append(filepath)
+        except Exception as exc:
+            print(f"[instagram] failed to download {url}: {exc}")
     return paths
 
 
@@ -120,12 +117,12 @@ def _try_embed(shortcode):
     embed_url = f"https://www.instagram.com/p/{shortcode}/embed/"
     print(f"[instagram] trying embed: {embed_url}")
 
-    with _make_client() as client:
-        resp = client.get(embed_url)
-        if resp.status_code != 200:
-            print(f"[instagram] embed returned {resp.status_code}")
-            return None
-        html = resp.text
+    resp = _fetch(embed_url)
+    if resp.status_code != 200:
+        print(f"[instagram] embed returned {resp.status_code}")
+        return None
+    html = resp.text
+    print(f"[instagram] embed page len={len(html)}")
 
     # Try video first
     videos = _EMBED_VIDEO_RE.findall(html) or _OG_VIDEO_RE.findall(html) or _VIDEO_URL_RE.findall(html)
@@ -138,7 +135,7 @@ def _try_embed(shortcode):
     # Try images from embedded JSON data
     images = _DISPLAY_URL_RE.findall(html) or _DISPLAY_SRC_RE.findall(html)
     if images:
-        urls = list(dict.fromkeys(_unescape(u) for u in images))  # deduplicate, preserve order
+        urls = list(dict.fromkeys(_unescape(u) for u in images))
         print(f"[instagram] embed found {len(urls)} image(s)")
         paths = _download_urls(urls)
         if paths:
@@ -166,24 +163,23 @@ _PROXY_FRONTENDS = [
 
 def _try_proxy_frontend(shortcode, original_url):
     """Try third-party Instagram proxy frontends that serve raw media."""
+    clean_url = _clean_ig_url(original_url)
+
     for name, domain in _PROXY_FRONTENDS:
         try:
-            # Rewrite instagram.com to the proxy domain
             proxy_url = re.sub(
                 r"(https?://)(?:www\.)?instagram\.com",
                 f"https://{domain}",
-                original_url,
+                clean_url,
             )
             print(f"[instagram] trying proxy frontend: {proxy_url}")
 
-            with _make_client() as client:
-                resp = client.get(proxy_url)
-                if resp.status_code != 200:
-                    print(f"[instagram] {name} returned {resp.status_code}")
-                    continue
-                html = resp.text
+            resp = _fetch(proxy_url)
+            if resp.status_code != 200:
+                print(f"[instagram] {name} returned {resp.status_code}")
+                continue
+            html = resp.text
 
-            # Look for direct media links
             videos = _OG_VIDEO_RE.findall(html) or _VIDEO_URL_RE.findall(html)
             if videos:
                 url = _unescape(videos[0])
@@ -214,23 +210,21 @@ def _try_direct_scrape(shortcode):
     print(f"[instagram] trying direct scrape: {post_url}")
 
     try:
-        with _make_client() as client:
-            # Use mobile user-agent — Instagram serves lighter pages
-            mobile_headers = {
-                **HEADERS,
-                "User-Agent": (
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-                    "Version/17.0 Mobile/15E148 Safari/604.1"
-                ),
-            }
-            resp = client.get(post_url, headers=mobile_headers)
-            if resp.status_code != 200:
-                print(f"[instagram] direct scrape returned {resp.status_code}")
-                return None
-            html = resp.text
+        mobile_headers = {
+            **HEADERS,
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                "Version/17.0 Mobile/15E148 Safari/604.1"
+            ),
+        }
+        resp = _fetch(post_url, headers=mobile_headers)
+        if resp.status_code != 200:
+            print(f"[instagram] direct scrape returned {resp.status_code}")
+            return None
+        html = resp.text
+        print(f"[instagram] direct scrape page len={len(html)}")
 
-        # Look for video_url in embedded JSON
         videos = _VIDEO_URL_RE.findall(html)
         if videos:
             url = _unescape(videos[0])
@@ -238,7 +232,6 @@ def _try_direct_scrape(shortcode):
             filepath = _download_url(url, "mp4")
             return {"type": "video", "files": [filepath]}
 
-        # Look for display_url (images)
         images = _DISPLAY_URL_RE.findall(html) or _DISPLAY_SRC_RE.findall(html)
         if images:
             urls = list(dict.fromkeys(_unescape(u) for u in images))
@@ -247,7 +240,6 @@ def _try_direct_scrape(shortcode):
             if paths:
                 return {"type": "image", "files": paths}
 
-        # Last resort: og:image
         og_imgs = _OG_IMAGE_RE.findall(html)
         if og_imgs:
             url = _unescape(og_imgs[0])
@@ -270,6 +262,7 @@ def instagram_download(url):
     """Try all Instagram strategies. Returns a DownloadResult or None."""
     from downloader import DownloadResult
 
+    url = _clean_ig_url(url)
     shortcode = _get_shortcode(url)
     if not shortcode:
         print(f"[instagram] could not extract shortcode from {url}")
